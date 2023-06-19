@@ -1,84 +1,290 @@
-#include "server.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <ncurses.h>
 
-int connfd;
-int board[8][8];
+#define BOARD_SIZE 8
 
-void waitForClient(char *portNumber)
+// 보드판 상태
+typedef enum
 {
-    // 클라이언트의 연결을 기다리는 함수
-    int listenfd;
-    struct sockaddr_in servaddr, cliaddr;
-    socklen_t len;
+    EMPTY,
+    BLACK,
+    WHITE
+} CellState;
 
-    listenfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (listenfd == -1)
-    {
-        perror("socket creation failed");
-        exit(EXIT_FAILURE);
-    }
-
-    int portnum = atoi(portNumber);
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    servaddr.sin_port = htons(portnum);
-    // 클라이언트 연결 완료
-}
-
-void receiveMessageFromClient()
+// 플레이어
+typedef enum
 {
-    // 클라이언트로부터 메시지를 받아와 처리하는 함수
-    char buffer[256];
-    memset(buffer, 0, sizeof(buffer));
-    recv(connfd, buffer, sizeof(buffer), 0);
+    PLAYER_BLACK,
+    PLAYER_WHITE
+} Player;
 
-    // 받은 메시지 처리
-    // 예시로 받은 좌표를 게임 로직에 적용하여 보드 업데이트
-    int row = buffer[1] - '0';
-    int col = buffer[0] - 'A';
+// 보드판
+CellState board[BOARD_SIZE][BOARD_SIZE];
 
-    // 보드 업데이트 로직 추가
+// 현재 플레이어
+Player currentPlayer = PLAYER_BLACK;
 
-    // 클라이언트에게 업데이트된 보드 상태 전송
-    sendMessageToClient(buffer);
-}
-
-void sendMessageToClient(char *message)
+// 보드판 초기화
+void initializeBoard()
 {
-    // 클라이언트로 메시지를 보내는 함수
-    send(connfd, message, strlen(message), 0);
-}
-
-void displayBoard()
-{
-    // 보드 상태를 표시하는 함수
-    // 예시로 간단한 텍스트 기반의 보드 표시
-    printf("   A B C D E F G H\n");
     for (int i = 0; i < BOARD_SIZE; i++)
     {
-        printf("%d ", i + 1);
         for (int j = 0; j < BOARD_SIZE; j++)
         {
-            printf("%c ", board[i][j]);
+            board[i][j] = EMPTY;
         }
-        printf("\n");
+    }
+
+    int center = BOARD_SIZE / 2;
+    board[center - 1][center - 1] = WHITE;
+    board[center][center] = WHITE;
+    board[center - 1][center] = BLACK;
+    board[center][center - 1] = BLACK;
+}
+
+// 보드판 그리기
+void drawBoard()
+{
+    clear();
+
+    start_color();
+    init_pair(1, COLOR_BLACK, COLOR_WHITE);
+    init_pair(2, COLOR_WHITE, COLOR_BLACK);
+
+    for (int i = 0; i < BOARD_SIZE; i++)
+    {
+        for (int j = 0; j < BOARD_SIZE; j++)
+        {
+            move(i * 2, j * 4);
+
+            if (board[i][j] == EMPTY)
+            {
+                printw(".  ");
+            }
+            else if (board[i][j] == BLACK)
+            {
+                attron(COLOR_PAIR(1));
+                printw("B  ");
+                attroff(COLOR_PAIR(1));
+            }
+            else if (board[i][j] == WHITE)
+            {
+                attron(COLOR_PAIR(2));
+                printw("W  ");
+                attroff(COLOR_PAIR(2));
+            }
+        }
+    }
+
+    refresh();
+}
+
+// 돌 뒤집기 + 놓을 자리 없을 경우 다음 턴으로 넘기기
+void flipPieces(int row, int col, int dRow, int dCol)
+{
+    CellState currentColor = (currentPlayer == PLAYER_BLACK) ? BLACK : WHITE;
+    CellState opponentColor = (currentPlayer == PLAYER_BLACK) ? WHITE : BLACK;
+
+    int newRow = row + dRow;
+    int newCol = col + dCol;
+
+    while (newRow >= 0 && newRow < BOARD_SIZE && newCol >= 0 && newCol < BOARD_SIZE)
+    {
+        if (board[newRow][newCol] == opponentColor)
+        {
+            newRow += dRow;
+            newCol += dCol;
+        }
+        else if (board[newRow][newCol] == currentColor)
+        {
+            while (newRow != row || newCol != col)
+            {
+                newRow -= dRow;
+                newCol -= dCol;
+                board[newRow][newCol] = currentColor;
+            }
+            return;
+        }
+        else if (board[newRow][newCol] == EMPTY)
+        {
+            return;
+        }
     }
 }
 
-void playGame()
+// 돌을 놓을 수 있는지 확인하는 함수
+int isMoveValid(int row, int col)
 {
-    // 게임 로직을 실행하는 함수
-    while (1)
+    if (board[row][col] != EMPTY)
     {
-        displayBoard();
-        receiveMessageFromClient();
+        return 0; // 이미 돌이 있는 위치이므로 유효하지 않음
+    }
 
-        // 게임 종료 조건 체크
-        // 예시로 특정 조건을 만족하면 "GAME OVER" 메시지 전송
-        if (isGameOver())
+    CellState playerColor = (currentPlayer == PLAYER_BLACK) ? BLACK : WHITE;
+    CellState opponentColor = (currentPlayer == PLAYER_BLACK) ? WHITE : BLACK;
+
+    // 주변 8방향에 상대방 돌이 있는지 확인
+    for (int dRow = -1; dRow <= 1; dRow++)
+    {
+        for (int dCol = -1; dCol <= 1; dCol++)
         {
-            sendMessageToClient("GAME OVER");
+            if (dRow == 0 && dCol == 0)
+            {
+                continue;
+            }
+
+            int newRow = row + dRow;
+            int newCol = col + dCol;
+            int foundOpponentPiece = 0;
+
+            while (newRow >= 0 && newRow < BOARD_SIZE && newCol >= 0 && newCol < BOARD_SIZE)
+            {
+                if (board[newRow][newCol] == opponentColor)
+                {
+                    foundOpponentPiece = 1;
+                    newRow += dRow;
+                    newCol += dCol;
+                }
+                else if (board[newRow][newCol] == playerColor)
+                {
+                    if (foundOpponentPiece)
+                    {
+                        return 1; // 주변에 상대방 돌이 있고, 돌을 뒤집을 돌도 있으므로 유효함
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                else if (board[newRow][newCol] == EMPTY)
+                {
+                    break; // 빈 공간이므로 유효하지 않음
+                }
+            }
+        }
+    }
+
+    return 0; // 주변에 상대방 돌이 없어 뒤집을 돌이 없으므로 유효하지 않음
+}
+
+// 돌 놓기
+void placePiece(int row, int col)
+{
+
+    if (!isMoveValid(row, col))
+    {
+        return; // 돌을 놓을 수 없는 경우 함수 종료
+    }
+
+    CellState playerColor = (currentPlayer == PLAYER_BLACK) ? BLACK : WHITE;
+    board[row][col] = playerColor;
+
+    for (int dRow = -1; dRow <= 1; dRow++)
+    {
+        for (int dCol = -1; dCol <= 1; dCol++)
+        {
+            if (dRow == 0 && dCol == 0)
+            {
+                continue;
+            }
+
+            flipPieces(row, col, dRow, dCol);
+        }
+    }
+
+    currentPlayer = (currentPlayer == PLAYER_BLACK) ? PLAYER_WHITE : PLAYER_BLACK;
+
+    // 상대방 플레이어가 돌을 놓을 수 있는지 확인
+    int opponentHasMove = 0;
+    for (int i = 0; i < BOARD_SIZE; i++)
+    {
+        for (int j = 0; j < BOARD_SIZE; j++)
+        {
+            if (isMoveValid(i, j))
+            {
+                opponentHasMove = 1;
+                break;
+            }
+        }
+        if (opponentHasMove)
+        {
             break;
         }
+    }
+
+    // 상대방 플레이어에게 턴을 넘김
+    if (!opponentHasMove)
+    {
+        currentPlayer = (currentPlayer == PLAYER_BLACK) ? PLAYER_WHITE : PLAYER_BLACK;
+    }
+}
+
+// 게임 종료 여부 체크
+int isGameOver()
+{
+    int blackCount = 0;
+    int whiteCount = 0;
+    int emptyCount = 0;
+
+    for (int i = 0; i < BOARD_SIZE; i++)
+    {
+        for (int j = 0; j < BOARD_SIZE; j++)
+        {
+            if (board[i][j] == BLACK)
+            {
+                blackCount++;
+            }
+            else if (board[i][j] == WHITE)
+            {
+                whiteCount++;
+            }
+            else if (board[i][j] == EMPTY)
+            {
+                emptyCount++;
+            }
+        }
+    }
+
+    if (blackCount == 0 || whiteCount == 0 || emptyCount == 0)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+// 게임 종료 후 결과 출력
+void printGameResult()
+{
+    int blackCount = 0;
+    int whiteCount = 0;
+
+    for (int i = 0; i < BOARD_SIZE; i++)
+    {
+        for (int j = 0; j < BOARD_SIZE; j++)
+        {
+            if (board[i][j] == BLACK)
+            {
+                blackCount++;
+            }
+            else if (board[i][j] == WHITE)
+            {
+                whiteCount++;
+            }
+        }
+    }
+
+    if (blackCount > whiteCount)
+    {
+        printw("Black wins!\n");
+    }
+    else if (blackCount < whiteCount)
+    {
+        printw("White wins!\n");
+    }
+    else
+    {
+        printw("It's a tie!\n");
     }
 }
