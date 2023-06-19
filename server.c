@@ -1,290 +1,87 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <ncurses.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
-#define BOARD_SIZE 8
+#define SERVER_PORT 9000
 
-// 보드판 상태
-typedef enum
-{
-    EMPTY,
-    BLACK,
-    WHITE
-} CellState;
+// ... (기존에 제공된 오셀로 게임 관련 함수 및 변수들)
 
-// 플레이어
-typedef enum
-{
-    PLAYER_BLACK,
-    PLAYER_WHITE
-} Player;
+int main() {
+    int serverSocket, clientSocket;
+    struct sockaddr_in serverAddress, clientAddress;
+    socklen_t clientAddressLength;
 
-// 보드판
-CellState board[BOARD_SIZE][BOARD_SIZE];
+    // Create socket
+    if ((serverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
 
-// 현재 플레이어
-Player currentPlayer = PLAYER_BLACK;
+    // Set server details
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_addr.s_addr = INADDR_ANY;
+    serverAddress.sin_port = htons(SERVER_PORT);
 
-// 보드판 초기화
-void initializeBoard()
-{
-    for (int i = 0; i < BOARD_SIZE; i++)
-    {
-        for (int j = 0; j < BOARD_SIZE; j++)
-        {
-            board[i][j] = EMPTY;
+    // Bind socket to address and port
+    if (bind(serverSocket, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) < 0) {
+        perror("Binding failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Listen for connections
+    if (listen(serverSocket, 1) < 0) {
+        perror("Listening failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Waiting for a client to connect...\n");
+
+    // Accept a client connection
+    clientAddressLength = sizeof(clientAddress);
+    if ((clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddress, &clientAddressLength)) < 0) {
+        perror("Acceptance failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Client connected!\n");
+
+    // Send the initial game state to the client
+    char buffer[1024];
+    memset(buffer, 0, sizeof(buffer));
+    snprintf(buffer, sizeof(buffer), "%s", getBoardAsString());  // 기존에 제공된 함수
+    if (send(clientSocket, buffer, strlen(buffer), 0) < 0) {
+        perror("Failed to send data");
+        exit(EXIT_FAILURE);
+    }
+
+    // Game loop
+    while (1) {
+        // Receive the user's move from the client
+        memset(buffer, 0, sizeof(buffer));
+        ssize_t bytesRead = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+        if (bytesRead < 0) {
+            perror("Failed to receive data");
+            exit(EXIT_FAILURE);
+        }
+
+        // Update the game state with the user's move
+        processUserMove(buffer);  // 기존에 제공된 함수
+
+        // Send the updated game state to the client
+        memset(buffer, 0, sizeof(buffer));
+        snprintf(buffer, sizeof(buffer), "%s", getBoardAsString());  // 기존에 제공된 함수
+        if (send(clientSocket, buffer, strlen(buffer), 0) < 0) {
+            perror("Failed to send data");
+            exit(EXIT_FAILURE);
         }
     }
 
-    int center = BOARD_SIZE / 2;
-    board[center - 1][center - 1] = WHITE;
-    board[center][center] = WHITE;
-    board[center - 1][center] = BLACK;
-    board[center][center - 1] = BLACK;
-}
-
-// 보드판 그리기
-void drawBoard()
-{
-    clear();
-
-    start_color();
-    init_pair(1, COLOR_BLACK, COLOR_WHITE);
-    init_pair(2, COLOR_WHITE, COLOR_BLACK);
-
-    for (int i = 0; i < BOARD_SIZE; i++)
-    {
-        for (int j = 0; j < BOARD_SIZE; j++)
-        {
-            move(i * 2, j * 4);
-
-            if (board[i][j] == EMPTY)
-            {
-                printw(".  ");
-            }
-            else if (board[i][j] == BLACK)
-            {
-                attron(COLOR_PAIR(1));
-                printw("B  ");
-                attroff(COLOR_PAIR(1));
-            }
-            else if (board[i][j] == WHITE)
-            {
-                attron(COLOR_PAIR(2));
-                printw("W  ");
-                attroff(COLOR_PAIR(2));
-            }
-        }
-    }
-
-    refresh();
-}
-
-// 돌 뒤집기 + 놓을 자리 없을 경우 다음 턴으로 넘기기
-void flipPieces(int row, int col, int dRow, int dCol)
-{
-    CellState currentColor = (currentPlayer == PLAYER_BLACK) ? BLACK : WHITE;
-    CellState opponentColor = (currentPlayer == PLAYER_BLACK) ? WHITE : BLACK;
-
-    int newRow = row + dRow;
-    int newCol = col + dCol;
-
-    while (newRow >= 0 && newRow < BOARD_SIZE && newCol >= 0 && newCol < BOARD_SIZE)
-    {
-        if (board[newRow][newCol] == opponentColor)
-        {
-            newRow += dRow;
-            newCol += dCol;
-        }
-        else if (board[newRow][newCol] == currentColor)
-        {
-            while (newRow != row || newCol != col)
-            {
-                newRow -= dRow;
-                newCol -= dCol;
-                board[newRow][newCol] = currentColor;
-            }
-            return;
-        }
-        else if (board[newRow][newCol] == EMPTY)
-        {
-            return;
-        }
-    }
-}
-
-// 돌을 놓을 수 있는지 확인하는 함수
-int isMoveValid(int row, int col)
-{
-    if (board[row][col] != EMPTY)
-    {
-        return 0; // 이미 돌이 있는 위치이므로 유효하지 않음
-    }
-
-    CellState playerColor = (currentPlayer == PLAYER_BLACK) ? BLACK : WHITE;
-    CellState opponentColor = (currentPlayer == PLAYER_BLACK) ? WHITE : BLACK;
-
-    // 주변 8방향에 상대방 돌이 있는지 확인
-    for (int dRow = -1; dRow <= 1; dRow++)
-    {
-        for (int dCol = -1; dCol <= 1; dCol++)
-        {
-            if (dRow == 0 && dCol == 0)
-            {
-                continue;
-            }
-
-            int newRow = row + dRow;
-            int newCol = col + dCol;
-            int foundOpponentPiece = 0;
-
-            while (newRow >= 0 && newRow < BOARD_SIZE && newCol >= 0 && newCol < BOARD_SIZE)
-            {
-                if (board[newRow][newCol] == opponentColor)
-                {
-                    foundOpponentPiece = 1;
-                    newRow += dRow;
-                    newCol += dCol;
-                }
-                else if (board[newRow][newCol] == playerColor)
-                {
-                    if (foundOpponentPiece)
-                    {
-                        return 1; // 주변에 상대방 돌이 있고, 돌을 뒤집을 돌도 있으므로 유효함
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-                else if (board[newRow][newCol] == EMPTY)
-                {
-                    break; // 빈 공간이므로 유효하지 않음
-                }
-            }
-        }
-    }
-
-    return 0; // 주변에 상대방 돌이 없어 뒤집을 돌이 없으므로 유효하지 않음
-}
-
-// 돌 놓기
-void placePiece(int row, int col)
-{
-
-    if (!isMoveValid(row, col))
-    {
-        return; // 돌을 놓을 수 없는 경우 함수 종료
-    }
-
-    CellState playerColor = (currentPlayer == PLAYER_BLACK) ? BLACK : WHITE;
-    board[row][col] = playerColor;
-
-    for (int dRow = -1; dRow <= 1; dRow++)
-    {
-        for (int dCol = -1; dCol <= 1; dCol++)
-        {
-            if (dRow == 0 && dCol == 0)
-            {
-                continue;
-            }
-
-            flipPieces(row, col, dRow, dCol);
-        }
-    }
-
-    currentPlayer = (currentPlayer == PLAYER_BLACK) ? PLAYER_WHITE : PLAYER_BLACK;
-
-    // 상대방 플레이어가 돌을 놓을 수 있는지 확인
-    int opponentHasMove = 0;
-    for (int i = 0; i < BOARD_SIZE; i++)
-    {
-        for (int j = 0; j < BOARD_SIZE; j++)
-        {
-            if (isMoveValid(i, j))
-            {
-                opponentHasMove = 1;
-                break;
-            }
-        }
-        if (opponentHasMove)
-        {
-            break;
-        }
-    }
-
-    // 상대방 플레이어에게 턴을 넘김
-    if (!opponentHasMove)
-    {
-        currentPlayer = (currentPlayer == PLAYER_BLACK) ? PLAYER_WHITE : PLAYER_BLACK;
-    }
-}
-
-// 게임 종료 여부 체크
-int isGameOver()
-{
-    int blackCount = 0;
-    int whiteCount = 0;
-    int emptyCount = 0;
-
-    for (int i = 0; i < BOARD_SIZE; i++)
-    {
-        for (int j = 0; j < BOARD_SIZE; j++)
-        {
-            if (board[i][j] == BLACK)
-            {
-                blackCount++;
-            }
-            else if (board[i][j] == WHITE)
-            {
-                whiteCount++;
-            }
-            else if (board[i][j] == EMPTY)
-            {
-                emptyCount++;
-            }
-        }
-    }
-
-    if (blackCount == 0 || whiteCount == 0 || emptyCount == 0)
-    {
-        return 1;
-    }
+    // Close the sockets
+    close(clientSocket);
+    close(serverSocket);
 
     return 0;
-}
-
-// 게임 종료 후 결과 출력
-void printGameResult()
-{
-    int blackCount = 0;
-    int whiteCount = 0;
-
-    for (int i = 0; i < BOARD_SIZE; i++)
-    {
-        for (int j = 0; j < BOARD_SIZE; j++)
-        {
-            if (board[i][j] == BLACK)
-            {
-                blackCount++;
-            }
-            else if (board[i][j] == WHITE)
-            {
-                whiteCount++;
-            }
-        }
-    }
-
-    if (blackCount > whiteCount)
-    {
-        printw("Black wins!\n");
-    }
-    else if (blackCount < whiteCount)
-    {
-        printw("White wins!\n");
-    }
-    else
-    {
-        printw("It's a tie!\n");
-    }
 }
